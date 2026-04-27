@@ -1,14 +1,15 @@
 const { body, validationResult } = require('express-validator');
-const { Op } = require('sequelize');
+const mongoose = require('mongoose');
 const { User, Store, Rating } = require('../models');
-const sequelize = require('../config/database');
+
+const buildFilter = (value) => ({ $regex: value, $options: 'i' });
 
 exports.getDashboard = async (req, res) => {
   try {
     const [totalUsers, totalStores, totalRatings] = await Promise.all([
-      User.count({ where: { role: ['user', 'store_owner'] } }),
-      Store.count(),
-      Rating.count(),
+      User.countDocuments({ role: { $in: ['user', 'store_owner'] } }),
+      Store.countDocuments(),
+      Rating.countDocuments(),
     ]);
     res.json({ totalUsers, totalStores, totalRatings });
   } catch (err) {
@@ -36,12 +37,18 @@ exports.createUser = async (req, res) => {
 
   try {
     const { name, email, address, password, role } = req.body;
-    const existing = await User.findOne({ where: { email } });
+    const existing = await User.findOne({ email });
     if (existing) return res.status(409).json({ message: 'Email already in use' });
 
     const user = await User.create({ name, email, address, password, role });
     res.status(201).json({
-      user: { id: user.id, name: user.name, email: user.email, address: user.address, role: user.role },
+      user: {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        address: user.address,
+        role: user.role,
+      },
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -51,21 +58,17 @@ exports.createUser = async (req, res) => {
 exports.getUsers = async (req, res) => {
   try {
     const { name, email, address, role, sortBy = 'name', sortOrder = 'ASC' } = req.query;
-    const where = { role: { [Op.ne]: 'admin' } };
-    if (name) where.name = { [Op.iLike]: `%${name}%` };
-    if (email) where.email = { [Op.iLike]: `%${email}%` };
-    if (address) where.address = { [Op.iLike]: `%${address}%` };
-    if (role) where.role = role;
+    const filter = { role: { $ne: 'admin' } };
+    if (name) filter.name = buildFilter(name);
+    if (email) filter.email = buildFilter(email);
+    if (address) filter.address = buildFilter(address);
+    if (role) filter.role = role;
 
     const validSort = ['name', 'email', 'address', 'role'].includes(sortBy) ? sortBy : 'name';
-    const validOrder = ['ASC', 'DESC'].includes(sortOrder.toUpperCase()) ? sortOrder.toUpperCase() : 'ASC';
+    const validOrder = sortOrder.toUpperCase() === 'DESC' ? -1 : 1;
 
-    const users = await User.findAll({
-      where,
-      attributes: ['id', 'name', 'email', 'address', 'role'],
-      order: [[validSort, validOrder]],
-    });
-    res.json(users);
+    const users = await User.find(filter, 'name email address role').sort({ [validSort]: validOrder }).lean();
+    res.json(users.map((user) => ({ id: user._id.toString(), ...user })));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -73,34 +76,28 @@ exports.getUsers = async (req, res) => {
 
 exports.getUserById = async (req, res) => {
   try {
-    const user = await User.findByPk(req.params.id, {
-      attributes: ['id', 'name', 'email', 'address', 'role'],
-      include: [
-        {
-          model: Store,
-          as: 'store',
-          attributes: ['id', 'name'],
-          include: [
-            {
-              model: Rating,
-              as: 'ratings',
-              attributes: [],
-            },
-          ],
-        },
-      ],
-    });
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const user = await User.findById(req.params.id).lean();
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    const result = user.toJSON();
-    if (user.role === 'store_owner' && user.store) {
-      const avgRating = await Rating.findOne({
-        where: { storeId: user.store.id },
-        attributes: [[sequelize.fn('AVG', sequelize.col('rating')), 'avgRating']],
-        raw: true,
-      });
-      result.storeRating = avgRating?.avgRating ? parseFloat(avgRating.avgRating).toFixed(1) : null;
+    const result = { id: user._id.toString(), ...user };
+    if (user.role === 'store_owner') {
+      const store = await Store.findOne({ ownerId: user._id }).lean();
+      if (store) {
+        const avgRatingResult = await Rating.aggregate([
+          { $match: { storeId: store._id } },
+          { $group: { _id: null, avgRating: { $avg: '$rating' } } },
+        ]);
+        result.store = { id: store._id.toString(), name: store.name };
+        result.storeRating = avgRatingResult.length
+          ? Number(avgRatingResult[0].avgRating.toFixed(1))
+          : null;
+      }
     }
+
     res.json(result);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -113,11 +110,25 @@ exports.createStore = async (req, res) => {
     if (!name || name.length < 20 || name.length > 60)
       return res.status(400).json({ message: 'Store name must be 20–60 characters' });
 
-    const existing = await Store.findOne({ where: { email } });
+    const existing = await Store.findOne({ email });
     if (existing) return res.status(409).json({ message: 'Store email already in use' });
 
-    const store = await Store.create({ name, email, address, ownerId: ownerId || null });
-    res.status(201).json(store);
+    const storeData = { name, email, address };
+    if (ownerId) {
+      if (!mongoose.Types.ObjectId.isValid(ownerId)) {
+        return res.status(400).json({ message: 'Invalid owner ID' });
+      }
+      storeData.ownerId = ownerId;
+    }
+
+    const store = await Store.create(storeData);
+    res.status(201).json({
+      id: store._id.toString(),
+      name: store.name,
+      email: store.email,
+      address: store.address,
+      ownerId: store.ownerId,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -126,25 +137,44 @@ exports.createStore = async (req, res) => {
 exports.getStores = async (req, res) => {
   try {
     const { name, email, address, sortBy = 'name', sortOrder = 'ASC' } = req.query;
-    const where = {};
-    if (name) where.name = { [Op.iLike]: `%${name}%` };
-    if (email) where.email = { [Op.iLike]: `%${email}%` };
-    if (address) where.address = { [Op.iLike]: `%${address}%` };
+    const match = {};
+    if (name) match.name = buildFilter(name);
+    if (email) match.email = buildFilter(email);
+    if (address) match.address = buildFilter(address);
 
     const validSort = ['name', 'email', 'address'].includes(sortBy) ? sortBy : 'name';
-    const validOrder = ['ASC', 'DESC'].includes(sortOrder.toUpperCase()) ? sortOrder.toUpperCase() : 'ASC';
+    const sortDirection = sortOrder.toUpperCase() === 'DESC' ? -1 : 1;
 
-    const stores = await Store.findAll({
-      where,
-      attributes: [
-        'id', 'name', 'email', 'address',
-        [sequelize.fn('AVG', sequelize.col('ratings.rating')), 'avgRating'],
-      ],
-      include: [{ model: Rating, as: 'ratings', attributes: [] }],
-      group: ['Store.id'],
-      order: [[validSort, validOrder]],
-    });
-    res.json(stores);
+    const stores = await Store.aggregate([
+      { $match: match },
+      {
+        $lookup: {
+          from: 'ratings',
+          localField: '_id',
+          foreignField: 'storeId',
+          as: 'ratings',
+        },
+      },
+      {
+        $addFields: {
+          avgRating: { $avg: '$ratings.rating' },
+        },
+      },
+      { $project: { ratings: 0 } },
+      { $sort: { [validSort]: sortDirection } },
+    ]);
+
+    res.json(
+      stores.map((store) => ({
+        id: store._id.toString(),
+        name: store.name,
+        email: store.email,
+        address: store.address,
+        avgRating: store.avgRating != null ? Number(store.avgRating.toFixed(1)) : null,
+        createdAt: store.createdAt,
+        updatedAt: store.updatedAt,
+      }))
+    );
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

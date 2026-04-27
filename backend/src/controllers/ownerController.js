@@ -1,36 +1,26 @@
-const { Rating, User, Store } = require('../models');
-const sequelize = require('../config/database');
+const { Rating, Store } = require('../models');
 
 exports.getMyStoreDashboard = async (req, res) => {
   try {
-    const store = await Store.findOne({ where: { ownerId: req.user.id } });
+    const store = await Store.findOne({ ownerId: req.user._id });
     if (!store) return res.status(404).json({ message: 'No store found for this owner' });
 
-    const avgRatingResult = await Rating.findOne({
-      where: { storeId: store.id },
-      attributes: [[sequelize.fn('AVG', sequelize.col('rating')), 'avgRating']],
-      raw: true,
-    });
+    const ratings = await Rating.find({ storeId: store._id })
+      .populate('user', 'name email')
+      .sort({ createdAt: -1 })
+      .lean();
 
-    const ratings = await Rating.findAll({
-      where: { storeId: store.id },
-      include: [
-        {
-          model: User,
-          as: 'user',
-          attributes: ['id', 'name', 'email'],
-        },
-      ],
-      order: [['createdAt', 'DESC']],
-    });
+    const avgRating = ratings.length
+      ? Number((ratings.reduce((sum, r) => sum + r.rating, 0) / ratings.length).toFixed(1))
+      : null;
 
     res.json({
-      store: { id: store.id, name: store.name, address: store.address },
-      avgRating: avgRatingResult?.avgRating ? parseFloat(avgRatingResult.avgRating).toFixed(1) : null,
+      store: { id: store._id.toString(), name: store.name, address: store.address },
+      avgRating,
       ratings: ratings.map((r) => ({
-        userId: r.userId,
-        userName: r.user.name,
-        userEmail: r.user.email,
+        userId: r.user?._id?.toString() || null,
+        userName: r.user?.name || null,
+        userEmail: r.user?.email || null,
         rating: r.rating,
         submittedAt: r.updatedAt,
       })),

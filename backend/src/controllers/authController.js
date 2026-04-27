@@ -3,7 +3,7 @@ const { body, validationResult } = require('express-validator');
 const { User } = require('../models');
 
 const generateToken = (user) =>
-  jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  jwt.sign({ id: user._id.toString(), role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
 exports.registerValidation = [
   body('name').isLength({ min: 20, max: 60 }).withMessage('Name must be 20–60 characters'),
@@ -24,14 +24,14 @@ exports.register = async (req, res) => {
 
   try {
     const { name, email, address, password } = req.body;
-    const existing = await User.findOne({ where: { email } });
+    const existing = await User.findOne({ email });
     if (existing) return res.status(409).json({ message: 'Email already in use' });
 
     const user = await User.create({ name, email, address, password, role: 'user' });
     const token = generateToken(user);
     res.status(201).json({
       token,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      user: { id: user._id.toString(), name: user.name, email: user.email, role: user.role },
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -41,7 +41,7 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ where: { email } });
+    const user = await User.findOne({ email });
     if (!user) return res.status(401).json({ message: 'Invalid credentials' });
 
     const valid = await user.comparePassword(password);
@@ -50,7 +50,7 @@ exports.login = async (req, res) => {
     const token = generateToken(user);
     res.json({
       token,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      user: { id: user._id.toString(), name: user.name, email: user.email, role: user.role },
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -63,7 +63,9 @@ exports.updatePassword = async (req, res) => {
 
   try {
     const { currentPassword, newPassword } = req.body;
-    const user = await User.findByPk(req.user.id);
+    const user = await User.findById(req.user._id);
+
+    if (!user) return res.status(404).json({ message: 'User not found' });
 
     const valid = await user.comparePassword(currentPassword);
     if (!valid) return res.status(400).json({ message: 'Current password is incorrect' });

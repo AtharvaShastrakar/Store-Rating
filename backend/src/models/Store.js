@@ -1,42 +1,34 @@
-const { DataTypes } = require('sequelize');
-const sequelize = require('../config/database');
+const mongoose = require('mongoose');
 
-const Store = sequelize.define('Store', {
-  id: {
-    type: DataTypes.INTEGER,
-    autoIncrement: true,
-    primaryKey: true,
-  },
-  name: {
-    type: DataTypes.STRING(60),
-    allowNull: false,
-    validate: {
-      len: [20, 60],
-    },
-  },
-  email: {
-    type: DataTypes.STRING,
-    allowNull: false,
-    unique: true,
-    validate: {
-      isEmail: true,
-    },
-  },
-  address: {
-    type: DataTypes.STRING(400),
-    allowNull: false,
-  },
-  ownerId: {
-    type: DataTypes.INTEGER,
-    allowNull: true,
-    references: {
-      model: 'users',
-      key: 'id',
-    },
-  },
-}, {
-  tableName: 'stores',
-  timestamps: true,
-});
+const { Schema } = mongoose;
 
-module.exports = Store;
+const storeSchema = new Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      minlength: 20,
+      maxlength: 60,
+    },
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+    address: {
+      type: String,
+      required: true,
+      maxlength: 400,
+    },
+    ownerId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model('Store', storeSchema);

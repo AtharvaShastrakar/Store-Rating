@@ -1,8 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const sequelize = require('./config/database');
-require('./models'); // load all models + associations
+const mongoose = require('./config/database');
+const { User } = require('./models');
 
 const app = express();
 
@@ -24,15 +24,9 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-sequelize
-  .sync({ alter: true })
-  .then(async () => {
-    console.log('Database synced');
-
-    // Seed admin if not exists
-    const { User } = require('./models');
-    const bcrypt = require('bcryptjs');
-    const adminExists = await User.findOne({ where: { role: 'admin' } });
+mongoose.connection.once('open', async () => {
+  try {
+    const adminExists = await User.findOne({ role: 'admin' });
     if (!adminExists) {
       await User.create({
         name: 'System Administrator User',
@@ -45,8 +39,12 @@ sequelize
     }
 
     app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-  })
-  .catch((err) => {
-    console.error('Failed to connect to database:', err);
+  } catch (err) {
+    console.error('Failed to initialize database:', err);
     process.exit(1);
-  });
+  }
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('MongoDB connection error:', err);
+});
